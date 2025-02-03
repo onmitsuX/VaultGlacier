@@ -383,37 +383,58 @@ def main():
         # Initialize managers
         vault_manager = AzureKeyVaultManager(args.vaultname)
         gpg_manager = GPGKeyManager()
-        # Pass the vault_manager when creating GlacierManager
-        glacier_manager = GlacierManager("keyvault-backup", vault_manager)  # Fixed this line
+        glacier_manager = GlacierManager("keyvault-backup", vault_manager)
 
         if args.direction == "pull":
-            # Get GPG key from Key Vault
+            # Pull functionality remains the same
             gpg_key = vault_manager.get_secret(os.getenv("GPG_KEY_NAME"))
-
-            # Pull secrets to file
             secrets_file = vault_manager.pull_secrets_to_file(args.filename, exclude_secrets=[os.getenv("GPG_KEY_NAME")])
-
-            # Encrypt the secrets file
             encrypted_file = gpg_manager.encrypt_file(secrets_file, gpg_key)
-
-            # Upload to Glacier
             glacier_manager.upload_to_glacier(encrypted_file)
-
-            # Cleanup encrypted file
             os.remove(encrypted_file)
 
         elif args.direction == "push":
-            # Push secrets to Key Vault
-            with open(args.filename, "r") as f:
-                secrets = json.load(f)
+            try:
+                # Load secrets from file
+                with open(args.filename, "r") as f:
+                    secrets = json.load(f)
 
-            for name, value in secrets.items():
-                subprocess.run(
-                    ["az", "keyvault", "secret", "set", "--vault-name", args.vaultname, "--name", name, "--value", value],
-                    check=True
-                )
+                # Validate secrets format
+                if not isinstance(secrets, dict):
+                    raise ValueError("Secrets file must contain a JSON object")
 
-            logger.info("Secrets successfully pushed to Key Vault")
+                success_count = 0
+                total_secrets = len(secrets)
+                
+                for name, value in secrets.items():
+                    try:
+                        # Set the secret
+                        vault_manager.set_secret(name, value)
+                        
+                        # Verify the secret was set correctly by reading it back
+                        verified_value = vault_manager.get_secret(name)
+                        if verified_value == value:
+                            logger.info(f"Secret '{name}' successfully set and verified")
+                            success_count += 1
+                        else:
+                            logger.error(f"Secret '{name}' was set but verification failed")
+                    except Exception as e:
+                        logger.error(f"Failed to set secret '{name}': {str(e)}")
+
+                # Log summary
+                logger.info(f"Push operation completed. {success_count}/{total_secrets} secrets successfully set and verified")
+                
+                if success_count != total_secrets:
+                    logger.warning("Some secrets failed to set properly. Please check the logs above for details.")
+                else:
+                    logger.info("All secrets were successfully set and verified!")
+
+            except json.JSONDecodeError:
+                logger.error("Failed to parse secrets file: Invalid JSON format")
+                exit(1)
+            except Exception as e:
+                logger.error(f"Push operation failed: {str(e)}")
+                exit(1)
 
     except Exception as e:
         logger.error(f"Operation failed: {str(e)}")
