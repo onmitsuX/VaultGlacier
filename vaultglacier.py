@@ -5,7 +5,7 @@ import os
 import boto3
 import gnupg
 import logging
-import tempfile  # Add this import
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -19,13 +19,16 @@ logger = logging.getLogger(__name__)
 # Subscription Mapping (with UAT included)
 SUBSCRIPTION_MAP = {
     "dev": os.getenv("AZURE_DEV_SUBSCRIPTION_ID"),
-    "infra": os.getenv("AZURE_INFRA_SUBSCRIPTION_ID"),
-    "prod": os.getenv("AZURE_PROD_SUBSCRIPTION_ID"),
     "qa": os.getenv("AZURE_QA_SUBSCRIPTION_ID"),
-    "infradev": os.getenv("AZURE_INFRADEV_SUBSCRIPTION_ID"),
-    "microsoft": os.getenv("AZURE_MICROSOFT_SUBSCRIPTION_ID"),
     "uat": os.getenv("AZURE_UAT_SUBSCRIPTION_ID"),
+    "prod": os.getenv("AZURE_PROD_SUBSCRIPTION_ID"),
+    "infra": os.getenv("AZURE_INFRA_SUBSCRIPTION_ID"),
+    "infra-dev": os.getenv("AZURE_INFRADEV_SUBSCRIPTION_ID"),
+    "microsoft": os.getenv("AZURE_MICROSOFT_SUBSCRIPTION_ID"),
 }
+
+# Standard tag schema
+TAG_SCHEMA = ["Environment", "DoesRotate", "Rotation", "VendorDependant"]
 
 class ConfigurationError(Exception):
     """Custom exception for configuration-related errors."""
@@ -116,6 +119,30 @@ class AzureKeyVaultManager:
                 logger.error("Failed to get secret from Key Vault")
             raise
 
+    def get_secret_tags(self, secret_name):
+        """Get tags for a specific secret."""
+        try:
+            result = subprocess.run(
+                [
+                    "az", "keyvault", "secret", "show",
+                    "--vault-name", self.vault_name,
+                    "--name", secret_name,
+                    "--query", "tags",
+                    "-o", "json",
+                    "--only-show-errors"
+                ],
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            if result.stderr:
+                raise subprocess.CalledProcessError(1, result.args, result.stdout, result.stderr)
+            tags = json.loads(result.stdout) if result.stdout.strip() else {}
+            return tags
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to get tags for secret {secret_name}")
+            raise
+
     def set_secret(self, secret_name, secret_value):
         """Set a secret in Azure Key Vault."""
         try:
@@ -139,27 +166,50 @@ class AzureKeyVaultManager:
             logger.error("Failed to set secret in Key Vault")
             raise
 
-    def pull_secrets_to_file(self, output_file, exclude_secrets=None):
+    def pull_secrets_to_file(self, output_file, exclude_secrets=None, tag_filter=None):
         """Pull secrets to a JSON file."""
         if exclude_secrets is None:
             exclude_secrets = []
-
         try:
             secrets_list = self.list_secrets()
             secrets_data = {}
-
+            filtered_count = 0
+            total_count = 0
+            
+            logger.info(f"Found {len(secrets_list)} secrets in vault {self.vault_name}")
+            
             for secret_name in secrets_list:
+                total_count += 1
                 if secret_name not in exclude_secrets:
+                    # Get tags for the secret
+                    tags = self.get_secret_tags(secret_name)
+                    
+                    # Apply tag filter if specified
+                    if tag_filter:
+                        key, value = tag_filter.split("==")
+                        if not tags or tags.get(key) != value:
+                            logger.debug(f"Skipping secret {secret_name} due to tag filter (expecting {key}=={value})")
+                            filtered_count += 1
+                            continue
+                    
                     value = self.get_secret(secret_name)
                     secrets_data[secret_name] = value
-
+                    
+                    if logger.getEffectiveLevel() == logging.DEBUG:
+                        logger.debug(f"Secret {secret_name} tags: {tags}")
+                else:
+                    logger.debug(f"Skipping excluded secret: {secret_name}")
+                    filtered_count += 1
+            
             with open(output_file, "w") as f:
                 json.dump(secrets_data, f, indent=4)
-
+                
+            logger.info(f"Pulled {len(secrets_data)} secrets to {output_file}")
+            logger.info(f"Filtered out {filtered_count} of {total_count} total secrets")
+            
             return output_file
-
         except Exception as e:
-            logger.error("Failed to pull secrets to file")
+            logger.error(f"Failed to pull secrets to file: {str(e)}")
             raise
 
     def list_secrets(self):
@@ -183,6 +233,14 @@ class AzureKeyVaultManager:
         except subprocess.CalledProcessError as e:
             logger.error("Failed to list secrets")
             raise
+
+    def validate_tag_schema(self, tags):
+        """Validate tags against the standard schema."""
+        missing_tags = [tag for tag in TAG_SCHEMA if tag not in tags]
+        if missing_tags:
+            logger.warning(f"Missing standard tags: {', '.join(missing_tags)}")
+            return False
+        return True
 
 class GPGKeyManager:
     def __init__(self):
@@ -274,7 +332,7 @@ class GPGKeyManager:
             if os.path.exists(self.gpg_home):
                 import shutil
                 shutil.rmtree(self.gpg_home)
-        
+
 class GlacierManager:
     def __init__(self, vault_name, key_vault_manager):
         try:
@@ -313,6 +371,23 @@ class GlacierManager:
             logger.error(f"Failed to initialize Glacier client: {str(e)}")
             raise
 
+    def upload_to_glacier(self, file_path):
+        """Upload file to Glacier vault."""
+        try:
+            file_name = Path(file_path).name
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            logger.info(f"Uploading {file_name} to Glacier vault: {self.vault_name}")
+
+            # Calculate tree hash
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+
+            # Upload archive
+            response = self.glacier_client.upload_archive(
+                vaultName=self.vault_name,
+                body=file_data
+            )
+
             archive_id = response['archiveId']
             
             # Store metadata in Key Vault
@@ -331,30 +406,6 @@ class GlacierManager:
             logger.info(f"Archive ID: {archive_id}")
             logger.info(f"Metadata stored in Key Vault as: {secret_name}")
             
-            return archive_id
-
-        except Exception as e:
-            logger.error(f"Failed to upload {file_path} to Glacier vault: {str(e)}")
-            raise
-
-    def upload_to_glacier(self, file_path):
-        """Upload file to Glacier vault."""
-        try:
-            file_name = Path(file_path).name
-            logger.info(f"Uploading {file_name} to Glacier vault: {self.vault_name}")
-
-            # Calculate tree hash
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
-
-            # Upload archive
-            response = self.glacier_client.upload_archive(
-                vaultName=self.vault_name,
-                body=file_data
-            )
-
-            logger.info(f"Successfully uploaded {file_name} to Glacier vault")
-            logger.info(f"Archive ID: {response['archiveId']}")
             return True
 
         except Exception as e:
@@ -366,8 +417,17 @@ def main():
     parser.add_argument("--direction", type=str, required=True, choices=["pull", "push"], help="Push or Pull secrets")
     parser.add_argument("--vaultname", type=str, required=True, help="Name of the Azure Key Vault")
     parser.add_argument("--filename", type=str, required=True, help="Filename for secrets")
-    parser.add_argument("--env", type=str, required=True, help="Azure environment for subscription selection")
+    parser.add_argument("--env", type=str, required=True, help="Azure environment for subscription selection (prod, qa, uat, infra, infra-dev, dev)")
+    parser.add_argument("--backup", action="store_true", help="Backup to Glacier after pulling secrets")
+    parser.add_argument("--encrypt", action="store_true", help="Encrypt the secrets file using GPG")
+    parser.add_argument("--tags", type=str, help="Filter secrets by tags (format: key==value)")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
+
+    # Set logging level based on verbose flag
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        logger.debug("Verbose logging enabled")
 
     try:
         # Validate environment
@@ -383,19 +443,48 @@ def main():
         # Initialize managers
         vault_manager = AzureKeyVaultManager(args.vaultname)
         gpg_manager = GPGKeyManager()
-        glacier_manager = GlacierManager("keyvault-backup", vault_manager)
 
         if args.direction == "pull":
-            # Pull functionality remains the same
-            gpg_key = vault_manager.get_secret(os.getenv("GPG_KEY_NAME"))
-            secrets_file = vault_manager.pull_secrets_to_file(args.filename, exclude_secrets=[os.getenv("GPG_KEY_NAME")])
-            encrypted_file = gpg_manager.encrypt_file(secrets_file, gpg_key)
-            glacier_manager.upload_to_glacier(encrypted_file)
-            os.remove(encrypted_file)
+            secrets_file = vault_manager.pull_secrets_to_file(
+                args.filename,
+                exclude_secrets=[os.getenv("GPG_KEY_NAME")],
+                tag_filter=args.tags
+            )
+            
+            logger.info(f"Successfully pulled secrets to {secrets_file}")
+            
+            if args.encrypt:
+                gpg_key_name = os.getenv("GPG_KEY_NAME")
+                if not gpg_key_name:
+                    raise ConfigurationError("GPG_KEY_NAME environment variable not set")
+                
+                logger.info(f"Retrieving GPG key from Key Vault: {gpg_key_name}")
+                gpg_key = vault_manager.get_secret(gpg_key_name)
+                encrypted_file = gpg_manager.encrypt_file(secrets_file, gpg_key)
+                
+                logger.info(f"Successfully encrypted secrets file to {encrypted_file}")
+                
+                if args.backup:
+                    glacier_manager = GlacierManager("keyvault-backup", vault_manager)
+                    glacier_manager.upload_to_glacier(encrypted_file)
+                    logger.info(f"Successfully backed up encrypted file to Glacier")
+                
+                os.remove(encrypted_file)
+                logger.info(f"Removed temporary encrypted file: {encrypted_file}")
+                os.remove(secrets_file)  # Clean up the unencrypted file
+                logger.info(f"Removed temporary secrets file: {secrets_file}")
+                
+            elif args.backup:
+                glacier_manager = GlacierManager("keyvault-backup", vault_manager)
+                glacier_manager.upload_to_glacier(secrets_file)
+                logger.info(f"Successfully backed up file to Glacier")
+                os.remove(secrets_file)  # Clean up after backup
+                logger.info(f"Removed temporary secrets file: {secrets_file}")
 
         elif args.direction == "push":
             try:
                 # Load secrets from file
+                logger.info(f"Loading secrets from {args.filename}")
                 with open(args.filename, "r") as f:
                     secrets = json.load(f)
 
@@ -405,6 +494,8 @@ def main():
 
                 success_count = 0
                 total_secrets = len(secrets)
+                
+                logger.info(f"Pushing {total_secrets} secrets to {args.vaultname}")
                 
                 for name, value in secrets.items():
                     try:
