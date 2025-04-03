@@ -153,7 +153,7 @@ python script.py --direction pull --vaultname your-vault-name --filename secrets
 <hr>
 
 
-### PowerShell CLI
+## PowerShell CLI
 
 #### Pulling Secrets from Azure Key Vault
 ```powershell
