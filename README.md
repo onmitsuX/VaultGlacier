@@ -17,7 +17,7 @@ VaultGlacier is a Python-based tool for securely managing Azure Key Vault secret
 
 ### Prerequisites
 
-#### General Requirements
+#### Requirements
 - Azure Subscription with access to Key Vault
 - Azure CLI installed and authenticated (`az login`)
 - AWS credentials configured (for Glacier backup)
