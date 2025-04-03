@@ -103,7 +103,7 @@ Handled automatically via environment variable:
 export AZURE_SUBSCRIPTION_ID="your-subscription-id"
 ```
 
-#### Encryption with GPG (--encrypt)
+### Encryption with GPG (--encrypt)
 To encrypt the secrets file during a pull operation:
 
 ```bash
@@ -120,7 +120,7 @@ python script.py --direction pull --vaultname your-vault-name --filename secrets
 - Tip: If you also use --backup, the encrypted file will be uploaded to AWS Glacier and then deleted locally after upload.
 
 
-#### Backup to AWS Glacier (--backup)
+### Backup to AWS Glacier (--backup)
 You can automatically back up the pulled secrets file (plain or encrypted) to AWS Glacier:
 ```bash
 python script.py --direction pull --vaultname your-vault-name --filename secrets.json --env prod --encrypt --backup
@@ -185,7 +185,7 @@ $env:AZURE_PROD_SUBSCRIPTION_ID="sub-id-here"
 $env:AZURE_PROD_SUBSCRIPTION_ID="sub-id-here"
 ```
 
-#### Encryption with GPG (-Encrypt)
+### Encryption with GPG (-Encrypt)
 To encrypt the secrets file when pulling secrets:
 
 ```powershell
@@ -206,7 +206,7 @@ The script will:
 - Encrypt the pulled secrets into a file named secrets.json-YYYYMMDD_HHMMSS.gpg.
 
 
-#### Backup to AWS Glacier (-Backup)
+### Backup to AWS Glacier (-Backup)
 To automatically back up the pulled (and optionally encrypted) secrets file to AWS Glacier:
 ```powershell
 .\script.ps1 -Direction pull -VaultName 'vaultnamegoeshere' -Filename 'secrets.json' -Env 'prod' -Encrypt -Backup
