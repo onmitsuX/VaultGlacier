@@ -12,6 +12,12 @@ from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+from dotenv import load_dotenv
+
+# ---------------------------
+# Load .env Environment Variables
+# ---------------------------
+load_dotenv()
 
 # ---------------------------
 # Logging Configuration
