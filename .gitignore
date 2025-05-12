@@ -1,0 +1,32 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment config
+.env
+secrets.json
+*.gpg
+
+# PowerShell artifacts
+*.ps1~
+*.psm1~
+*.psd1~
+*.bak
+*.tmp
+
+# Logs
+script.log
+audit.log
+.log
+
+# Output and encrypted files
+*.json
+*.gpg
+tempkey.asc
