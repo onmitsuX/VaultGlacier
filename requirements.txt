@@ -1,0 +1,4 @@
+boto3
+python-gnupg
+tqdm
+python-dotenv
